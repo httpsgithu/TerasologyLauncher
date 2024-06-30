@@ -3,12 +3,12 @@
 
 package org.terasology.launcher.ui;
 
+import com.google.common.collect.Sets;
 import javafx.animation.Transition;
 import javafx.beans.binding.Bindings;
 import javafx.beans.binding.ObjectBinding;
 import javafx.beans.property.BooleanProperty;
 import javafx.beans.property.Property;
-import javafx.beans.property.ReadOnlyObjectProperty;
 import javafx.beans.property.SimpleBooleanProperty;
 import javafx.beans.property.SimpleObjectProperty;
 import javafx.beans.value.ObservableValue;
@@ -28,7 +28,6 @@ import javafx.scene.control.ComboBox;
 import javafx.scene.control.ProgressBar;
 import javafx.scene.control.Tab;
 import javafx.scene.control.TabPane;
-import javafx.scene.control.Tooltip;
 import javafx.scene.input.MouseEvent;
 import javafx.stage.Modality;
 import javafx.stage.Stage;
@@ -38,31 +37,32 @@ import org.slf4j.LoggerFactory;
 import org.terasology.launcher.LauncherConfiguration;
 import org.terasology.launcher.game.GameManager;
 import org.terasology.launcher.game.GameService;
-import org.terasology.launcher.game.Installation;
+import org.terasology.launcher.game.GameVersionNotSupportedException;
+import org.terasology.launcher.game.GameInstallation;
 import org.terasology.launcher.model.Build;
 import org.terasology.launcher.model.GameIdentifier;
 import org.terasology.launcher.model.GameRelease;
 import org.terasology.launcher.model.Profile;
-import org.terasology.launcher.repositories.RepositoryManager;
-import org.terasology.launcher.settings.LauncherSettings;
+import org.terasology.launcher.model.ReleaseMetadata;
+import org.terasology.launcher.repositories.ReleaseRepository;
 import org.terasology.launcher.settings.Settings;
 import org.terasology.launcher.tasks.DeleteTask;
 import org.terasology.launcher.tasks.DownloadTask;
-import org.terasology.launcher.util.BundleUtils;
 import org.terasology.launcher.util.HostServices;
-import org.terasology.launcher.util.Languages;
+import org.terasology.launcher.util.I18N;
 
 import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.nio.file.Path;
-import java.util.Arrays;
+import java.util.Date;
 import java.util.List;
 import java.util.Optional;
 import java.util.ResourceBundle;
+import java.util.Set;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
-import java.util.function.Predicate;
 import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 public class ApplicationController {
 
@@ -75,27 +75,27 @@ public class ApplicationController {
     private Settings launcherSettings;
 
     private GameManager gameManager;
-    private RepositoryManager repositoryManager;
+
     private final GameService gameService;
     private final ExecutorService executor = Executors.newSingleThreadExecutor();
     private DownloadTask downloadTask;
 
     private Stage stage;
 
-    private Property<GameRelease> selectedRelease;
-    private Property<GameAction> gameAction;
-    private BooleanProperty downloading;
-    private BooleanProperty showPreReleases;
+    private final Property<LauncherConfiguration> config;
 
-    private ObservableSet<GameIdentifier> installedGames;
+    private final Property<GameRelease> selectedRelease;
+    private final Property<GameAction> gameAction;
+    private final BooleanProperty downloading;
+    private final BooleanProperty showPreReleases;
+
+    private final ObservableSet<GameIdentifier> installedGames;
 
     /**
      * Indicate whether the user's hard drive is running out of space for game downloads.
      */
     private final Property<Optional<Warning>> warning;
 
-    @FXML
-    private ComboBox<Profile> profileComboBox;
     @FXML
     private ComboBox<GameRelease> gameReleaseComboBox;
     @FXML
@@ -133,6 +133,8 @@ public class ApplicationController {
         gameService.setOnFailed(this::handleRunFailed);
         gameService.valueProperty().addListener(this::handleRunStarted);
 
+        config = new SimpleObjectProperty<>();
+
         downloading = new SimpleBooleanProperty(false);
         showPreReleases = new SimpleBooleanProperty(false);
 
@@ -166,6 +168,37 @@ public class ApplicationController {
         initComboBoxes();
         initButtons();
         setLabelStrings();
+
+        cancelDownloadButton.setTooltip(I18N.createTooltip(I18N.labelBinding("launcher_cancelDownload")));
+        startButton.setTooltip(I18N.createTooltip(I18N.labelBinding("launcher_start")));
+        downloadButton.setTooltip(I18N.createTooltip(I18N.labelBinding("launcher_download")));
+        deleteButton.setTooltip(I18N.createTooltip(I18N.labelBinding("launcher_delete")));
+        settingsButton.setTooltip(I18N.createTooltip(I18N.labelBinding("launcher_settings")));
+        exitButton.setTooltip(I18N.createTooltip(I18N.labelBinding("launcher_exit")));
+
+        // add Logback appender to both the root logger and the tab
+        Logger rootLogger = LoggerFactory.getLogger(Logger.ROOT_LOGGER_NAME);
+        if (rootLogger instanceof ch.qos.logback.classic.Logger) {
+            ch.qos.logback.classic.Logger logbackLogger = (ch.qos.logback.classic.Logger) rootLogger;
+
+            logViewController.setContext(logbackLogger.getLoggerContext());
+            logViewController.start(); // CHECK: do I really need to start it manually here?
+            logbackLogger.addAppender(logViewController);
+        }
+
+        //TODO: This only updates when the launcher is initialized (which should happen exactly once o.O)
+        //      We should update this value at least every time the download directory changes (user setting).
+        //      Ideally, we would check periodically for disk space.
+        warning.bind(Bindings.createObjectBinding(() -> {
+            logger.info("Checking for remaining disk space ...");
+            LauncherConfiguration cfg = config.getValue();
+            if (cfg != null && cfg.getDownloadDirectory().toFile().getUsableSpace() <= MINIMUM_FREE_SPACE) {
+                return Optional.of(Warning.LOW_ON_SPACE);
+            } else {
+                return Optional.empty();
+            }
+        }, config, installedGames));
+
     }
 
     /**
@@ -179,48 +212,75 @@ public class ApplicationController {
      * to the selected profile, and derive the currently selected release from the combo box's selection model.
      */
     private void initComboBoxes() {
-        profileComboBox.setCellFactory(list -> new GameProfileCell());
-        profileComboBox.setButtonCell(new GameProfileCell());
-        profileComboBox.setItems(FXCollections.observableList(Arrays.asList(Profile.values().clone())));
-        ReadOnlyObjectProperty<Profile> selectedProfile = profileComboBox.getSelectionModel().selectedItemProperty();
-        // control what game release is selected when switching profiles. this is a reaction to a change of the selected
-        // profile to perform a one-time action to select a game release. afterwards, the user is in control of what is
-        // selected
-        selectedProfile.addListener((obs, oldVal, newVal) -> {
-            ObservableList<GameRelease> availableReleases = gameReleaseComboBox.getItems();
-            GameIdentifier lastPlayedGame = launcherSettings.lastPlayedGameVersion.get();
+        final ObjectBinding<ObservableList<GameRelease>> releases = Bindings.createObjectBinding(() -> {
+            LauncherConfiguration cfg = config.getValue();
+            if (cfg == null || cfg.getReleaseRepository() == null) {
+                return FXCollections.emptyObservableList();
+            } else {
+                ReleaseRepository repository = config.getValue().getReleaseRepository();
+                Set<GameRelease> onlineReleases = Sets.newHashSet(repository.fetchReleases());
+                // Create dummy game release objects from locally installed games.
+                // We need this in case of running the launcher in "offline" mode
+                // and the list of game releases fetched via the repository manager
+                // is empty, but there are still games installed locally.
+                //
+                // However, we only want to add these dummy releases if they are 
+                // not listed in the online releases. Thus, filtering out everything
+                // with a GameIdentifier that is already part of the releases fetched
+                // from online sources.
+                //
+                //TODO: This is a weird place to create these dummy releases.
+                //      Move this code somewhere else, and make sure that we 
+                //      have all the necessary information stored locally, like
+                //      the timestamp or the changelog.
+                Set<GameIdentifier> onlineIds = onlineReleases.stream().map(GameRelease::getId).collect(Collectors.toSet());
+                Stream<GameRelease> localGames = installedGames.stream()
+                    .filter(id -> !onlineIds.contains(id))
+                    .map(id -> new GameRelease(id, null, new ReleaseMetadata("", new Date())));
 
-            Optional<GameRelease> lastPlayed = availableReleases.stream()
-                    .filter(release -> release.getId().equals(lastPlayedGame))
-                    .findFirst();
-            Optional<GameRelease> lastInstalled = availableReleases.stream()
-                    .filter(release -> installedGames.contains(release.getId()))
-                    .findFirst();
+                Stream<GameRelease> allReleases = Stream.concat(onlineReleases.stream(), localGames);
 
-            gameReleaseComboBox.getSelectionModel().select(lastPlayed
-                    .or(() -> lastInstalled)
-                    .or(() -> availableReleases.stream().findFirst())
-                    .orElse(null));
-        });
+                List<GameRelease> releasesForProfile =
+                        allReleases
+                                .filter(release -> release.getId().getProfile() == Profile.OMEGA)
+                                .filter(release -> showPreReleases.getValue() || release.getId().getBuild().equals(Build.STABLE))
+                                .sorted(ApplicationController::compareReleases)
+                                .collect(Collectors.toList());
+                
+                return FXCollections.observableList(releasesForProfile);
+            }
+        }, config, showPreReleases, installedGames);
 
         // derive the releases to display from the selected profile (`selectedProfile`). the resulting list is ordered
         // in the way the launcher is supposed to display the versions (currently by release timestamp).
-        final ObjectBinding<ObservableList<GameRelease>> releases = Bindings.createObjectBinding(() -> {
-            if (repositoryManager == null) {
-                return FXCollections.emptyObservableList();
-            }
-            List<GameRelease> releasesForProfile =
-                    repositoryManager.getReleases().stream()
-                            .filter(release -> release.getId().getProfile() == selectedProfile.get())
-                            .filter(release -> showPreReleases.getValue() || release.getId().getBuild().equals(Build.STABLE))
-                            .sorted(ApplicationController::compareReleases)
-                            .collect(Collectors.toList());
-            return FXCollections.observableList(releasesForProfile);
-        }, selectedProfile, showPreReleases);
+        final ObjectBinding<GameRelease> releaseToSelect = Bindings.createObjectBinding(()-> {
+            GameIdentifier lastPlayedGame = Optional.ofNullable(config.getValue())
+                .map(cfg -> cfg.getLauncherSettings().lastPlayedGameVersion.get())
+                .orElse(null);
+
+            Optional<GameRelease> lastPlayed = releases.get().stream()
+                    .filter(release -> release.getId().equals(lastPlayedGame))
+                    .filter(release -> installedGames.contains(release.getId()))
+                    .findFirst();
+            Optional<GameRelease> lastInstalled = releases.get().stream()
+                    .filter(release -> installedGames.contains(release.getId()))
+                    .findFirst();
+
+            return lastPlayed
+                    .or(() -> lastInstalled)
+                    .or(() -> releases.get().stream().findFirst())
+                    .orElse(null);
+        }, releases, config);
+
+        releaseToSelect.addListener((obs, old, now) -> {
+            gameReleaseComboBox.getSelectionModel().select(now);
+        }); 
 
         gameReleaseComboBox.itemsProperty().bind(releases);
-        gameReleaseComboBox.buttonCellProperty().bind(Bindings.createObjectBinding(() -> new GameReleaseCell(installedGames, true), installedGames));
-        gameReleaseComboBox.cellFactoryProperty().bind(Bindings.createObjectBinding(() -> list -> new GameReleaseCell(installedGames), installedGames));
+        gameReleaseComboBox.buttonCellProperty()
+                .bind(Bindings.createObjectBinding(() -> new GameReleaseCell(installedGames, true), installedGames));
+        gameReleaseComboBox.cellFactoryProperty()
+                .bind(Bindings.createObjectBinding(() -> list -> new GameReleaseCell(installedGames), installedGames));
 
         selectedRelease.bind(gameReleaseComboBox.getSelectionModel().selectedItemProperty());
         //TODO: instead of imperatively updating the changelog view its value should be bound via property, too
@@ -240,23 +300,16 @@ public class ApplicationController {
      * are not managed "disappear" from the scene.
      */
     private void initButtons() {
-        cancelDownloadButton.setTooltip(new Tooltip(BundleUtils.getLabel("launcher_cancelDownload")));
         cancelDownloadButton.visibleProperty().bind(Bindings.createBooleanBinding(() -> gameAction.getValue() == GameAction.CANCEL, gameAction));
         cancelDownloadButton.managedProperty().bind(cancelDownloadButton.visibleProperty());
 
-        startButton.setTooltip(new Tooltip(BundleUtils.getLabel("launcher_start")));
         startButton.visibleProperty().bind(Bindings.createBooleanBinding(() -> gameAction.getValue() == GameAction.PLAY, gameAction));
         startButton.managedProperty().bind(startButton.visibleProperty());
 
-        downloadButton.setTooltip(new Tooltip(BundleUtils.getLabel("launcher_download")));
         downloadButton.visibleProperty().bind(Bindings.createBooleanBinding(() -> gameAction.getValue() == GameAction.DOWNLOAD, gameAction));
         downloadButton.managedProperty().bind(downloadButton.visibleProperty());
 
-        deleteButton.setTooltip(new Tooltip(BundleUtils.getLabel("launcher_delete")));
         deleteButton.disableProperty().bind(startButton.visibleProperty().not());
-
-        settingsButton.setTooltip(new Tooltip(BundleUtils.getLabel("launcher_settings")));
-        exitButton.setTooltip(new Tooltip(BundleUtils.getLabel("launcher_exit")));
     }
 
     /**
@@ -265,18 +318,19 @@ public class ApplicationController {
      * are absent/empty
      */
     private void setLabelStrings() {
-        changelogTab.setText(BundleUtils.getLabel("tab_changelog"));
-        aboutTab.setText(BundleUtils.getLabel("tab_about"));
-        logTab.setText(BundleUtils.getLabel("tab_log"));
+        changelogTab.textProperty().bind(I18N.labelBinding("tab_changelog"));
+        aboutTab.textProperty().bind(I18N.labelBinding("tab_about"));
+        logTab.textProperty().bind(I18N.labelBinding("tab_log"));
     }
 
     @SuppressWarnings("checkstyle:HiddenField")
     public void update(final LauncherConfiguration configuration, final Stage stage, final HostServices hostServices) {
+        this.config.setValue(configuration);
+
         this.launcherDirectory = configuration.getLauncherDirectory();
         this.launcherSettings = configuration.getLauncherSettings();
         this.showPreReleases.bind(launcherSettings.showPreReleases);
 
-        this.repositoryManager = configuration.getRepositoryManager();
         this.gameManager = configuration.getGameManager();
 
         this.stage = stage;
@@ -285,29 +339,6 @@ public class ApplicationController {
         // get notified if the installed games are changed from a different thread (DeleteTask or DownloadTask).
         Bindings.bindContent(installedGames, gameManager.getInstalledGames());
 
-        profileComboBox.getSelectionModel().select(
-                Optional.ofNullable(launcherSettings.lastPlayedGameVersion.get())
-                        .map(GameIdentifier::getProfile).orElse(Profile.OMEGA)
-        );
-
-        // add Logback appender to both the root logger and the tab
-        Logger rootLogger = LoggerFactory.getLogger(Logger.ROOT_LOGGER_NAME);
-        if (rootLogger instanceof ch.qos.logback.classic.Logger) {
-            ch.qos.logback.classic.Logger logbackLogger = (ch.qos.logback.classic.Logger) rootLogger;
-
-            logViewController.setContext(logbackLogger.getLoggerContext());
-            logViewController.start(); // CHECK: do I really need to start it manually here?
-            logbackLogger.addAppender(logViewController);
-        }
-
-        //TODO: This only updates when the launcher is initialized (which should happen exactly once o.O)
-        //      We should update this value at least every time the download directory changes (user setting).
-        //      Ideally, we would check periodically for disk space.
-        if (configuration.getDownloadDirectory().toFile().getUsableSpace() <= MINIMUM_FREE_SPACE) {
-            warning.setValue(Optional.of(Warning.LOW_ON_SPACE));
-        } else {
-            warning.setValue(Optional.empty());
-        }
         footerController.setHostServices(hostServices);
     }
 
@@ -333,7 +364,7 @@ public class ApplicationController {
     @FXML
     protected void openSettingsAction() {
         try {
-            logger.info("Current Locale: {}", Languages.getCurrentLocale());
+            logger.info("Current Locale: {}", I18N.getCurrentLocale());
             Stage settingsStage = new Stage(StageStyle.UNDECORATED);
             settingsStage.initModality(Modality.APPLICATION_MODAL);
 
@@ -341,11 +372,12 @@ public class ApplicationController {
             Parent root;
             /* Fall back to default language if loading the FXML file files with the current locale */
             try {
-                fxmlLoader = BundleUtils.getFXMLLoader("settings");
+                fxmlLoader = I18N.getFXMLLoader("settings");
                 root = fxmlLoader.load();
             } catch (IOException e) {
-                fxmlLoader = BundleUtils.getFXMLLoader("settings");
-                fxmlLoader.setResources(ResourceBundle.getBundle("org.terasology.launcher.bundle.LabelsBundle", Languages.DEFAULT_LOCALE));
+                fxmlLoader = I18N.getFXMLLoader("settings");
+                //FIXME whut?
+                fxmlLoader.setResources(ResourceBundle.getBundle("org.terasology.launcher.bundle.LabelsBundle", I18N.getDefaultLocale()));
                 root = fxmlLoader.load();
             }
 
@@ -364,21 +396,25 @@ public class ApplicationController {
     protected void startGameAction() {
         if (gameService.isRunning()) {
             logger.debug("The game can not be started because another game is already running.");
-            Dialogs.showInfo(stage, BundleUtils.getLabel("message_information_gameRunning"));
+            Dialogs.showInfo(stage, I18N.getLabel("message_information_gameRunning"));
             return;
         }
         final GameRelease release = selectedRelease.getValue();
-        final Installation installation;
+        final GameInstallation gameInstallation;
         try {
-            installation = gameManager.getInstallation(release.getId());
+            gameInstallation = gameManager.getInstallation(release.getId());
         } catch (FileNotFoundException e) {
             // TODO: Refresh the list of installed games or something? This should not be reachable if
             //     the properties are up to date.
             logger.warn("Failed to get an installation for selection {}", release, e);
-            Dialogs.showError(stage, BundleUtils.getMessage("message_error_installationNotFound", release));
+            Dialogs.showError(stage, I18N.getMessage("message_error_installationNotFound", release));
             return;
         }
-        gameService.start(installation, launcherSettings);
+        try {
+            gameService.start(gameInstallation, launcherSettings);
+        } catch (GameVersionNotSupportedException e) {
+            Dialogs.showError(stage, e.getMessage());
+        }
     }
 
     private void handleRunStarted(ObservableValue<? extends Boolean> o, Boolean oldValue, Boolean newValue) {
@@ -410,7 +446,7 @@ public class ApplicationController {
             logger.warn("Failed to locate tab pane.");
         }
 
-        Dialogs.showError(stage, BundleUtils.getLabel("message_error_gameStart"));
+        Dialogs.showError(stage, I18N.getLabel("message_error_gameStart"));
     }
 
     @FXML
@@ -418,7 +454,6 @@ public class ApplicationController {
         downloadTask = new DownloadTask(gameManager, selectedRelease.getValue());
         downloading.bind(downloadTask.runningProperty());
 
-        profileComboBox.disableProperty().bind(downloadTask.runningProperty());
         gameReleaseComboBox.disableProperty().bind(downloadTask.runningProperty());
         progressBar.visibleProperty().bind(downloadTask.runningProperty());
 
@@ -444,8 +479,8 @@ public class ApplicationController {
         final Path gameDir = gameManager.getInstallDirectory(id);
 
         final Alert alert = new Alert(Alert.AlertType.CONFIRMATION);
-        alert.setContentText(BundleUtils.getMessage("confirmDeleteGame_withoutData", gameDir));
-        alert.setTitle(BundleUtils.getLabel("message_deleteGame_title"));
+        alert.setContentText(I18N.getMessage("confirmDeleteGame_withoutData", gameDir));
+        alert.setTitle(I18N.getLabel("message_deleteGame_title"));
         alert.initOwner(stage);
 
         alert.showAndWait()
@@ -458,21 +493,6 @@ public class ApplicationController {
                     final DeleteTask deleteTask = new DeleteTask(gameManager, id);
                     executor.submit(deleteTask);
                 });
-    }
-
-    /**
-     * Select the first item matching given predicate, select the first item otherwise.
-     *
-     * @param comboBox  the combo box to change the selection for
-     * @param predicate first item matching this predicate will be selected
-     */
-    private <T> void selectItem(final ComboBox<T> comboBox, Predicate<T> predicate) {
-        final T item = comboBox.getItems().stream()
-                .filter(predicate)
-                .findFirst()
-                .orElse(comboBox.getItems().get(0));
-
-        comboBox.getSelectionModel().select(item);
     }
 
     /**

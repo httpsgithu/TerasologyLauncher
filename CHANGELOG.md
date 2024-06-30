@@ -1,5 +1,85 @@
 # Terasology Launcher - ChangeLog
 
+## 4.8.0 (2023-06-30)
+
+Special thanks to everyone that contributed to this release:
+@anshukrs, @jdrueckert, @skaldarnar.
+
+# Changelog
+
+## 🐛 Bug Fixes
+
+- #699 fix: show locally installed games in drop-down when offline (@skaldarnar)
+- #691 fix: updated the download URL (@anshukrs)
+
+## 🧰 Maintenance
+
+- #698 chore: handle offline mode more graceful (@skaldarnar)
+- #697 chore: Remove unused code (@skaldarnar)
+
+## 🧪 Tests
+
+- #688 test: add test to ensure that all supported languages have language flag icons (@skaldarnar)
+
+## 📚 Documentation
+
+- #689 doc: add troubleshooting section and download timeout workaround (@jdrueckert)
+
+## ⚙️ Logistics
+
+- #687 build(pmd): update PMD rules and fix issues (@skaldarnar)
+
+## 4.7.0 (2022-11-09)
+
+### 🚀 Features
+
+- #684 feat: remove game profile selection (fixed on OMEGA) (@skaldarnar)
+- #682 feat(i18n): add missing german translations (@jdrueckert)
+- #679 feat(i18n): use properties and bindings for i18n of resources bundles (@skaldarnar)
+
+### 🐛 Bug Fixes
+
+- #681 fix(i18n): reduce log spam for missing labels (@skaldarnar)
+
+### 🧰 Maintenance
+
+- #685 chore: update Gradle (7.1.1 >>> 7.5.1) and dependencies (@skaldarnar)
+
+### 📚 Documentation
+
+- #683 doc: udpate documentation (@skaldarnar)
+- #680 doc: add release guide (@skaldarnar)
+
+## 4.6.0 (2022-09-03)
+
+### 🚀 Features
+
+- #670 feat(i18n): Update Ukrainian language strings & fill in missing i18n (@rzats)
+- #668 feat: add request caching with OkHttp (@skaldarnar)
+- #667 feat: 1:1 migration from LauncherSettings >>> Settings (@skaldarnar)
+- #665 feat: prepare for JavaFX-property-based launcher settings (@skaldarnar)
+- #658 feat: hide pre-releases by default (@skaldarnar)
+
+### 🐛 Bug Fixes
+
+- #659 fix: pass JVM heap settings in correct order to GameStarter (@skaldarnar)
+
+### 🧰 Maintenance
+
+- #666 refactor: change API of Settings#load/store to use folder path (@skaldarnar)
+- #664 chore: pass LauncherConfiguration to ApplicationController#update (@skaldarnar)
+- #662 chore: merge BaseLauncherSettings into LauncherSettings (@skaldarnar)
+
+### 📚 Documentation
+
+- #676 doc: update documentation (@skaldarnar)
+
+### ⚙️ Logistics
+
+- #674 build(github): update actions (@skaldarnar)
+- #673 build!: remove 32-bit Windows build (@keturn)
+- #672 build: runtime upgrade to Java 11.0.16.1 (from 11.0.7) (@keturn)
+
 ## 4.5.0 (2021-08-29)
 
 ### 🚀 Features

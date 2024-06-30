@@ -3,6 +3,7 @@
 
 package org.terasology.launcher.repositories;
 
+import com.google.common.collect.Lists;
 import com.google.common.collect.Sets;
 import com.google.gson.Gson;
 import okhttp3.OkHttpClient;
@@ -14,18 +15,24 @@ import java.util.List;
 import java.util.Set;
 import java.util.stream.Collectors;
 
-public class RepositoryManager {
+public class CombinedRepository implements ReleaseRepository {
 
     private final Set<GameRelease> releases;
 
-    public RepositoryManager(OkHttpClient httpClient) {
+    /**
+     * Create a repository manager and immediately fetch for game releases.
+     *
+     * @param httpClient the HTTP client to be used for remote requests
+     */
+    public CombinedRepository(OkHttpClient httpClient) {
         JenkinsClient client = new JenkinsClient(httpClient, new Gson());
 
-        ReleaseRepository omegaNightly = new JenkinsRepositoryAdapter(Profile.OMEGA, Build.NIGHTLY, client);
-        ReleaseRepository github = new GithubRepositoryAdapter(httpClient);
+        ReleaseRepository omegaNightly = new JenkinsRepository(Profile.OMEGA, Build.NIGHTLY, client);
+        ReleaseRepository github = new GithubRepository(httpClient);
 
         Set<ReleaseRepository> all = Sets.newHashSet(github, omegaNightly);
 
+        //TODO: separate IO operation/remote call from construction of the manager object?
         releases = fetchReleases(all);
     }
 
@@ -40,4 +47,8 @@ public class RepositoryManager {
         return releases;
     }
 
+    @Override
+    public List<GameRelease> fetchReleases() {
+        return Lists.newArrayList(getReleases());
+    }
 }

@@ -29,9 +29,9 @@ class JenkinsClient {
 
     private static final String ARTIFACT = "artifact/";
 
-    private final Gson gson;
-
     final OkHttpClient client;
+
+    private final Gson gson;
 
     JenkinsClient(OkHttpClient httpClient, Gson gson) {
         this.gson = gson;
@@ -69,7 +69,11 @@ class JenkinsClient {
         var request = new Request.Builder().url(url).build();
         try (var response = client.newCall(request).execute()) {
             logger.debug("{}{}", response, response.cacheResponse() != null ? " (cached)" : "");
-            return gson.fromJson(response.body().string(), Jenkins.ApiResult.class);
+            if (response.isSuccessful()) {
+                return gson.fromJson(response.body().string(), Jenkins.ApiResult.class);
+            } else {
+                logger.warn("Failed to read from URL '{}' with status code {}.", url.toExternalForm(), response.code());
+            }
         } catch (JsonSyntaxException | JsonIOException e) {
             logger.warn("Failed to read JSON from '{}'", url.toExternalForm(), e);
         } catch (IOException e) {
@@ -83,6 +87,7 @@ class JenkinsClient {
     // c) the 'Expires' header is removed from response for requests with PropertiesRequest
 
     @Nullable
+    @SuppressWarnings("PMD.ReturnEmptyCollectionRatherThanNull")
     Properties requestProperties(final URL artifactUrl) {
         Preconditions.checkNotNull(artifactUrl);
 

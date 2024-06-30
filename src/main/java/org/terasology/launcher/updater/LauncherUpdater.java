@@ -3,7 +3,7 @@
 
 package org.terasology.launcher.updater;
 
-import com.vdurmont.semver4j.Semver;
+import org.semver4j.Semver;
 import javafx.application.Platform;
 import javafx.scene.Parent;
 import javafx.scene.control.Alert;
@@ -17,7 +17,7 @@ import org.kohsuke.github.GitHub;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.terasology.launcher.model.LauncherVersion;
-import org.terasology.launcher.util.BundleUtils;
+import org.terasology.launcher.util.I18N;
 
 import java.io.IOException;
 import java.util.concurrent.ExecutionException;
@@ -79,24 +79,24 @@ public final class LauncherUpdater {
 
     private FutureTask<Boolean> getUpdateDialog(Stage parentStage, GHRelease release) {
         final String infoText = "  " +
-                BundleUtils.getLabel("message_update_current") +
+                I18N.getLabel("message_update_current") +
                 "  " +
-                currentVersion.getValue() +
+                currentVersion.getVersion() +
                 "  \n" +
                 "  " +
-                BundleUtils.getLabel("message_update_latest") +
+                I18N.getLabel("message_update_latest") +
                 "  " +
-                versionOf(release).getValue() +
+                versionOf(release).getVersion() +
                 "  ";
 
         return new FutureTask<>(() -> {
-            Parent root = BundleUtils.getFXMLLoader("update_dialog").load();
+            Parent root = I18N.getFXMLLoader("update_dialog").load();
             ((TextArea) root.lookup("#infoTextArea")).setText(infoText);
             ((TextArea) root.lookup("#changelogTextArea")).setText(release.getBody());
 
             final Alert alert = new Alert(Alert.AlertType.CONFIRMATION);
-            alert.setTitle(BundleUtils.getLabel("message_update_launcher_title"));
-            alert.setHeaderText(BundleUtils.getLabel("message_update_launcher"));
+            alert.setTitle(I18N.getLabel("message_update_launcher_title"));
+            alert.setHeaderText(I18N.getLabel("message_update_launcher"));
             alert.getDialogPane().setContent(root);
             alert.initOwner(parentStage);
             alert.getButtonTypes().setAll(ButtonType.YES, ButtonType.NO);
